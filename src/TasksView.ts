@@ -216,7 +216,7 @@ export class TasksView extends ItemView {
 
   // ── Log discovery ─────────────────────────────────────
 
-  private getRecentLogs(taskId: string, max = 3): { filename: string; absPath: string; timestamp: string; success: boolean }[] {
+  private getRecentLogs(taskId: string, max = 5): { filename: string; absPath: string; timestamp: string; success: boolean }[] {
     const fs = require("fs") as typeof import("fs");
     const logsDir = this.getLogsDir();
     if (!logsDir || !fs.existsSync(logsDir)) return [];
@@ -319,17 +319,6 @@ export class TasksView extends ItemView {
       this.runTask(task, runBtn);
     });
 
-    // Edit button — opens inline source editor
-    const editBtn = controls.createEl("button", {
-      cls: "pensieve-task-btn clickable-icon",
-      attr: { "aria-label": "Edit task source" },
-    });
-    setIcon(editBtn, "pencil");
-    editBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      this.openSourceEditor(task);
-    });
-
     // ── Expandable detail panel ──
     const detail = row.createDiv({ cls: "pensieve-task-detail hidden" });
 
@@ -346,88 +335,62 @@ export class TasksView extends ItemView {
     });
   }
 
-  /** Open a full-source editor in the main content area */
-  private openSourceEditor(task: ParsedTask): void {
-    // Read current content from disk
+  private renderDetail(task: ParsedTask, container: HTMLElement): void {
+    container.empty();
+
+    // Read current raw content from disk
     let content: string;
     try {
       content = fs.readFileSync(task.absPath, "utf-8");
     } catch {
-      new Notice(`Unable to read ${task.filename}`);
+      container.createDiv({ cls: "pensieve-tasks-empty", text: "Unable to read file." });
       return;
     }
 
-    // Create a new leaf in the main editor area
-    const leaf = this.app.workspace.getLeaf("tab");
-    leaf.setViewState({ type: "empty" }).then(() => {
-      // Build the editor UI inside the leaf's view container
-      const container = leaf.view.contentEl;
-      container.empty();
-      container.addClass("pensieve-source-editor");
+    // ── Source header with save button ──
+    const sourceHeader = container.createDiv({ cls: "pensieve-source-inline-header" });
+    sourceHeader.createEl("h6", { text: "Source" });
 
-      // Header bar
-      const header = container.createDiv({ cls: "pensieve-source-header" });
-      header.createEl("span", { cls: "pensieve-source-title", text: task.filename });
-
-      const headerControls = header.createDiv({ cls: "pensieve-source-controls" });
-
-      const saveBtn = headerControls.createEl("button", {
-        cls: "mod-cta",
-        text: "Save",
-      });
-
-      // Textarea
-      const editorWrapper = container.createDiv({ cls: "pensieve-source-wrapper" });
-      const textarea = editorWrapper.createEl("textarea", {
-        cls: "pensieve-source-textarea",
-      });
-      textarea.value = content;
-      textarea.spellcheck = false;
-
-      // Save handler
-      const save = () => {
-        try {
-          fs.writeFileSync(task.absPath, textarea.value, "utf-8");
-          new Notice(`Saved ${task.filename}`);
-        } catch (err: any) {
-          new Notice(`Failed to save: ${err.message}`);
-        }
-      };
-
-      saveBtn.addEventListener("click", save);
-
-      // Ctrl+S shortcut within the textarea
-      textarea.addEventListener("keydown", (e) => {
-        if ((e.ctrlKey || e.metaKey) && e.key === "s") {
-          e.preventDefault();
-          save();
-        }
-      });
-
-      // Update the leaf title
-      (leaf as any).tabHeaderInnerTitleEl?.setText?.(task.filename);
+    const saveBtn = sourceHeader.createEl("button", {
+      cls: "pensieve-task-btn clickable-icon pensieve-save-btn",
+      attr: { "aria-label": "Save changes" },
     });
-  }
+    setIcon(saveBtn, "save");
+    saveBtn.addClass("pensieve-save-hidden");
 
-  private renderDetail(task: ParsedTask, container: HTMLElement): void {
-    container.empty();
+    // ── Inline textarea ──
+    const textarea = container.createEl("textarea", {
+      cls: "pensieve-inline-textarea",
+    });
+    textarea.value = content;
+    textarea.spellcheck = false;
 
-    // ── Metadata ──
-    const meta = container.createDiv({ cls: "pensieve-task-meta" });
+    // Show save button when content changes
+    textarea.addEventListener("input", () => {
+      saveBtn.removeClass("pensieve-save-hidden");
+    });
 
-    const metaGrid = meta.createDiv({ cls: "pensieve-task-meta-grid" });
-    this.addMetaRow(metaGrid, "Agent", task.meta.agent);
-    this.addMetaRow(metaGrid, "Invocation", task.meta.invocation);
-    this.addMetaRow(metaGrid, "Schedule", task.meta.schedule);
-    this.addMetaRow(metaGrid, "Enabled", task.meta.enabled ? "Yes" : "No");
-    this.addMetaRow(metaGrid, "Notifications", task.meta.notifications.toast ? "Toast" : "None");
+    const save = () => {
+      try {
+        fs.writeFileSync(task.absPath, textarea.value, "utf-8");
+        new Notice(`Saved ${task.filename}`);
+        saveBtn.addClass("pensieve-save-hidden");
+      } catch (err: any) {
+        new Notice(`Failed to save: ${err.message}`);
+      }
+    };
 
-    // ── Prompt / Instructions ──
-    const promptSection = container.createDiv({ cls: "pensieve-task-prompt-section" });
-    promptSection.createEl("h6", { text: "Prompt" });
+    saveBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      save();
+    });
 
-    const promptContent = promptSection.createDiv({ cls: "pensieve-task-prompt" });
-    promptContent.createEl("pre", { text: task.instructions || "(empty)" });
+    textarea.addEventListener("keydown", (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+        e.preventDefault();
+        save();
+      }
+    });
 
     // ── Recent Logs ──
     const logsSection = container.createDiv({ cls: "pensieve-task-logs-section" });
@@ -477,12 +440,6 @@ export class TasksView extends ItemView {
         });
       }
     }
-  }
-
-  private addMetaRow(grid: HTMLElement, label: string, value: string): void {
-    const row = grid.createDiv({ cls: "pensieve-meta-row" });
-    row.createSpan({ cls: "pensieve-meta-label", text: label });
-    row.createSpan({ cls: "pensieve-meta-value", text: value });
   }
 
   // ── Task execution via cron-agents CLI ────────────────
@@ -549,11 +506,9 @@ export class TasksView extends ItemView {
         if (lower.includes("completed") || lower.includes("success")) {
           this.stopRunning(taskId, runBtn);
           new Notice(`✓ ${taskId} completed`);
-          this.debouncedRefresh();
         } else if (lower.includes("failed") || lower.includes("error")) {
           this.stopRunning(taskId, runBtn);
           new Notice(`✗ ${taskId} failed`);
-          this.debouncedRefresh();
         }
         // Otherwise still running — keep polling
       });
