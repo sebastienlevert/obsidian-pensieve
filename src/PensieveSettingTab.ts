@@ -13,8 +13,24 @@ export class PensieveSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl("h2", { text: "Pensieve Settings" });
-    containerEl.createEl("p", {
-      text: "Configure AI-enhanced note management for your vault.",
-    });
+
+    new Setting(containerEl)
+      .setName("Today note")
+      .setDesc(
+        this.plugin.settings.todayNotePath
+          ? `Currently pinned: ${this.plugin.settings.todayNotePath}`
+          : 'No note pinned. Use the "Pin current note as Today" command.'
+      )
+      .addButton((btn) =>
+        btn
+          .setButtonText("Clear")
+          .setWarning()
+          .onClick(async () => {
+            this.plugin.settings.todayNotePath = "";
+            await this.plugin.saveSettings();
+            this.plugin.refreshTodayViews();
+            this.display();
+          })
+      );
   }
 }
