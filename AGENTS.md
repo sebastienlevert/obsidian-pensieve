@@ -13,7 +13,7 @@ An Obsidian plugin for AI-enhanced note management, optimized for better AI cons
 
 1. Make changes in `src/`
 2. Run `npm run build`
-3. Deploy to local Obsidian using the **deploy-to-obsidian** skill (`.github/copilot/skills/deploy-to-obsidian.md`)
+3. Deploy to local Obsidian using the **deploy-to-obsidian** skill (`.agents/skills/deploy-to-obsidian.md`)
 4. Reload Obsidian (`Ctrl+R`) or toggle the plugin off/on
 
 ## Key files
