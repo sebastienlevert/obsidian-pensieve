@@ -374,13 +374,36 @@ export class TasksView extends ItemView {
 
         const openBtn = entryHeader.createEl("button", {
           cls: "pensieve-task-btn clickable-icon",
-          attr: { "aria-label": "Open log file" },
+          attr: { "aria-label": "Open log file externally" },
         });
         setIcon(openBtn, "external-link");
         openBtn.addEventListener("click", (e) => {
           e.stopPropagation();
-          // Open the log file externally since it's outside the vault
           require("electron").shell.openPath(log.absPath);
+        });
+
+        // Inline log content — lazy-loaded on click
+        const logBody = entry.createDiv({ cls: "pensieve-log-body hidden" });
+
+        entryHeader.addEventListener("click", () => {
+          const isHidden = logBody.hasClass("hidden");
+          if (isHidden) {
+            // Lazy-load content only on first expand
+            if (!logBody.hasAttribute("data-loaded")) {
+              try {
+                const content = fs.readFileSync(log.absPath, "utf-8");
+                logBody.createEl("pre", { text: content });
+              } catch {
+                logBody.createEl("pre", { text: "(Unable to read log file)" });
+              }
+              logBody.setAttribute("data-loaded", "true");
+            }
+            logBody.removeClass("hidden");
+            entry.addClass("pensieve-log-expanded");
+          } else {
+            logBody.addClass("hidden");
+            entry.removeClass("pensieve-log-expanded");
+          }
         });
       }
     }

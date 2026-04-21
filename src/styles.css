@@ -231,3 +231,32 @@
   flex: 1;
   font-family: var(--font-monospace);
 }
+
+.pensieve-log-header {
+  cursor: pointer;
+}
+
+.pensieve-log-body {
+  margin-top: var(--size-4-2);
+}
+
+.pensieve-log-body.hidden {
+  display: none;
+}
+
+.pensieve-log-body pre {
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  padding: var(--size-4-3);
+  font-size: var(--font-ui-smaller);
+  font-family: var(--font-monospace);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.pensieve-log-expanded {
+  background: var(--background-secondary-alt);
+}
