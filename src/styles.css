@@ -120,6 +120,12 @@
   cursor: pointer;
 }
 
+.pensieve-task-btn[disabled] {
+  cursor: not-allowed;
+  pointer-events: none;
+  opacity: 0.5;
+}
+
 .pensieve-task-running {
   animation: pensieve-spin 1s linear infinite;
   opacity: 0.6;

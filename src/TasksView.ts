@@ -305,6 +305,15 @@ export class TasksView extends ItemView {
       attr: { "aria-label": "Run task now" },
     });
     setIcon(runBtn, "play");
+
+    // If already running, show spinner immediately
+    if (this.runningTasks.has(task.meta.id)) {
+      runBtn.empty();
+      setIcon(runBtn, "loader");
+      runBtn.addClass("pensieve-task-running");
+      runBtn.setAttribute("disabled", "true");
+    }
+
     runBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       this.runTask(task, runBtn);
@@ -489,6 +498,7 @@ export class TasksView extends ItemView {
     runBtn.empty();
     setIcon(runBtn, "loader");
     runBtn.addClass("pensieve-task-running");
+    runBtn.setAttribute("disabled", "true");
 
     new Notice(`Running ${task.meta.id}...`);
 
@@ -565,6 +575,7 @@ export class TasksView extends ItemView {
     runBtn.empty();
     setIcon(runBtn, "play");
     runBtn.removeClass("pensieve-task-running");
+    runBtn.removeAttribute("disabled");
   }
 }
 
