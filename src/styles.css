@@ -236,6 +236,13 @@
   cursor: pointer;
 }
 
+.pensieve-log-chevron {
+  display: flex;
+  align-items: center;
+  color: var(--text-faint);
+  transition: transform 100ms ease;
+}
+
 .pensieve-log-body {
   margin-top: var(--size-4-2);
 }

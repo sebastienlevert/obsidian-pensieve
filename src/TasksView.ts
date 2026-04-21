@@ -367,20 +367,13 @@ export class TasksView extends ItemView {
           cls: `pensieve-log-header ${log.success ? "pensieve-log-success" : "pensieve-log-failure"}`,
         });
 
+        const chevron = entryHeader.createSpan({ cls: "pensieve-log-chevron" });
+        setIcon(chevron, "chevron-right");
+
         const iconEl = entryHeader.createSpan({ cls: "pensieve-log-icon" });
         setIcon(iconEl, log.success ? "check-circle" : "x-circle");
 
         entryHeader.createSpan({ cls: "pensieve-log-time", text: log.timestamp });
-
-        const openBtn = entryHeader.createEl("button", {
-          cls: "pensieve-task-btn clickable-icon",
-          attr: { "aria-label": "Open log file externally" },
-        });
-        setIcon(openBtn, "external-link");
-        openBtn.addEventListener("click", (e) => {
-          e.stopPropagation();
-          require("electron").shell.openPath(log.absPath);
-        });
 
         // Inline log content — lazy-loaded on click
         const logBody = entry.createDiv({ cls: "pensieve-log-body hidden" });
@@ -388,7 +381,6 @@ export class TasksView extends ItemView {
         entryHeader.addEventListener("click", () => {
           const isHidden = logBody.hasClass("hidden");
           if (isHidden) {
-            // Lazy-load content only on first expand
             if (!logBody.hasAttribute("data-loaded")) {
               try {
                 const content = fs.readFileSync(log.absPath, "utf-8");
@@ -400,9 +392,11 @@ export class TasksView extends ItemView {
             }
             logBody.removeClass("hidden");
             entry.addClass("pensieve-log-expanded");
+            setIcon(chevron, "chevron-down");
           } else {
             logBody.addClass("hidden");
             entry.removeClass("pensieve-log-expanded");
+            setIcon(chevron, "chevron-right");
           }
         });
       }
