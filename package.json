@@ -1,0 +1,26 @@
+{
+  "name": "obsidian-pensieve",
+  "version": "0.1.0",
+  "description": "AI-enhanced note management for Obsidian — optimized for better AI consumption of your vault",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs --dev",
+    "build": "node esbuild.config.mjs"
+  },
+  "keywords": [
+    "obsidian",
+    "pensieve",
+    "ai",
+    "notes"
+  ],
+  "author": "Sébastien Levert",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "builtin-modules": "^3.3.0",
+    "esbuild": "^0.21.0",
+    "obsidian": "latest",
+    "tslib": "^2.6.0",
+    "typescript": "^5.4.0"
+  }
+}

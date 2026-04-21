@@ -1,0 +1,19 @@
+# Build output
+main.js
+styles.css
+
+# Node
+node_modules/
+
+# Obsidian
+data.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
