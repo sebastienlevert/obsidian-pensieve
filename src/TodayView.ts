@@ -36,12 +36,21 @@ export class TodayView extends ItemView {
 
   /** Prevent pin, link, and move actions on this tab */
   onPaneMenu(menu: Menu, source: string): void {
-    // Only add the close action — skip the default pin/link/move items
-    menu.addItem((item) => {
-      item.setTitle("Close").setIcon("x").onClick(() => {
-        this.leaf.detach();
+    // Obsidian adds Pin/Link/Move at the leaf level after this method.
+    // Intercept showAtPosition to strip them before the menu renders.
+    const originalShow = menu.showAtPosition.bind(menu);
+    menu.showAtPosition = (position: any, doc?: Document) => {
+      const blocked = new Set(["Pin", "Link with tab...", "Move to new window"]);
+      (menu as any).items = (menu as any).items.filter((item: any) => {
+        const title = item.titleEl?.textContent?.trim() ?? item.dom?.textContent?.trim() ?? "";
+        return !blocked.has(title);
       });
-    });
+      // Also remove orphaned separators
+      (menu as any).items = (menu as any).items.filter(
+        (item: any) => !item.dom?.classList?.contains("menu-separator")
+      );
+      originalShow(position, doc);
+    };
   }
 
   async onOpen(): Promise<void> {
