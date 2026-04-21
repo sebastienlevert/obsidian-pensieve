@@ -267,3 +267,55 @@
 .pensieve-log-expanded {
   background: var(--background-secondary-alt);
 }
+
+/* ── Source Editor ──────────────────────── */
+
+.pensieve-source-editor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 0;
+}
+
+.pensieve-source-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--size-4-2) var(--size-4-4);
+  border-bottom: 1px solid var(--background-modifier-border);
+  flex-shrink: 0;
+}
+
+.pensieve-source-title {
+  font-weight: var(--font-semibold);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-medium);
+}
+
+.pensieve-source-controls {
+  display: flex;
+  gap: var(--size-4-2);
+}
+
+.pensieve-source-wrapper {
+  flex: 1;
+  min-height: 0;
+  padding: 0;
+}
+
+.pensieve-source-textarea {
+  width: 100%;
+  height: 100%;
+  border: none;
+  outline: none;
+  resize: none;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-small);
+  line-height: var(--line-height-tight);
+  padding: var(--size-4-4);
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+}
