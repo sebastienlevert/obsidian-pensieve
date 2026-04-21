@@ -1,6 +1,7 @@
-import { Plugin, addIcon, Notice } from "obsidian";
+import { Plugin, addIcon, Notice, TFile, Menu, MenuItem } from "obsidian";
 import { TodayView } from "./TodayView";
 import { PensieveSettingTab } from "./PensieveSettingTab";
+import { shareFile } from "./sharing";
 import { VIEW_TYPE_TODAY, ICON_TODAY, TODAY_ICON_SVG, DEFAULT_SETTINGS } from "./constants";
 import type { PensieveSettings } from "./constants";
 
@@ -76,6 +77,47 @@ export default class PensievePlugin extends Plugin {
       },
     });
 
+    // Command: Share current file via OneDrive
+    this.addCommand({
+      id: "share-file",
+      name: "Share current file via OneDrive",
+      callback: () => {
+        const file = this.app.workspace.getActiveFile();
+        if (!file) {
+          new Notice("No active file to share.");
+          return;
+        }
+        this.shareVaultFile(file);
+      },
+    });
+
+    // Right-click context menu on files in the file explorer
+    this.registerEvent(
+      this.app.workspace.on("file-menu", (menu: Menu, file) => {
+        if (!(file instanceof TFile)) return;
+        menu.addItem((item: MenuItem) => {
+          item
+            .setTitle("Share via OneDrive")
+            .setIcon("share-2")
+            .onClick(() => this.shareVaultFile(file));
+        });
+      })
+    );
+
+    // Right-click context menu on editor tabs
+    this.registerEvent(
+      this.app.workspace.on("editor-menu", (menu: Menu) => {
+        const file = this.app.workspace.getActiveFile();
+        if (!file) return;
+        menu.addItem((item: MenuItem) => {
+          item
+            .setTitle("Share via OneDrive")
+            .setIcon("share-2")
+            .onClick(() => this.shareVaultFile(file));
+        });
+      })
+    );
+
     // Global rename handler — keep the pinned path in sync
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
@@ -129,6 +171,17 @@ export default class PensievePlugin extends Plugin {
 
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
+  }
+
+  /** Resolve a vault file to its absolute path and invoke the OneDrive share dialog */
+  private shareVaultFile(file: TFile): void {
+    const adapter = this.app.vault.adapter as any;
+    if (!adapter.basePath) {
+      new Notice("Cannot determine vault path.");
+      return;
+    }
+    const absolutePath = require("path").join(adapter.basePath, file.path);
+    shareFile(absolutePath);
   }
 
   onunload(): void {
