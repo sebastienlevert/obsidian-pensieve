@@ -104,6 +104,11 @@ export class TasksView extends ItemView {
       clearTimeout(this.refreshTimer);
       this.refreshTimer = null;
     }
+    // Clean up all poll timers
+    for (const timer of this.pollTimers.values()) {
+      clearInterval(timer);
+    }
+    this.pollTimers.clear();
     this.stopFsWatcher();
   }
 
@@ -411,14 +416,22 @@ export class TasksView extends ItemView {
 
   // ── Task execution via cron-agents CLI ────────────────
 
+  /** Track which tasks are currently running */
+  private runningTasks = new Set<string>();
+  private pollTimers = new Map<string, ReturnType<typeof setInterval>>();
+
   private runTask(task: ParsedTask, runBtn: HTMLElement): void {
+    if (this.runningTasks.has(task.meta.id)) return; // Already running
+
+    this.runningTasks.add(task.meta.id);
     runBtn.empty();
     setIcon(runBtn, "loader");
     runBtn.addClass("pensieve-task-running");
 
     new Notice(`Running ${task.meta.id}...`);
 
-    const proc = spawn("npx", ["@sebastienlevert/cron-agents", "run", task.meta.id], {
+    // Launch in background mode
+    const proc = spawn("cron-agents", ["run", "--background", task.meta.id], {
       shell: true,
       stdio: "pipe",
       cwd: require("os").homedir(),
@@ -429,26 +442,67 @@ export class TasksView extends ItemView {
     proc.stderr?.on("data", (data: Buffer) => { output += data.toString(); });
 
     proc.on("close", (code) => {
-      runBtn.empty();
-      setIcon(runBtn, "play");
-      runBtn.removeClass("pensieve-task-running");
-
-      if (code === 0) {
-        new Notice(`✓ ${task.meta.id} completed`);
-      } else {
-        new Notice(`✗ ${task.meta.id} failed (exit ${code})`);
+      if (code !== 0) {
+        this.stopRunning(task.meta.id, runBtn);
+        new Notice(`✗ Failed to start ${task.meta.id} (exit ${code})`);
+        return;
       }
 
-      // Refresh to show new log entry
-      this.debouncedRefresh();
+      // Poll run-status until complete
+      this.pollRunStatus(task.meta.id, runBtn);
     });
 
     proc.on("error", (err) => {
-      runBtn.empty();
-      setIcon(runBtn, "play");
-      runBtn.removeClass("pensieve-task-running");
+      this.stopRunning(task.meta.id, runBtn);
       new Notice(`✗ Failed to run ${task.meta.id}: ${err.message}`);
     });
+  }
+
+  private pollRunStatus(taskId: string, runBtn: HTMLElement): void {
+    const POLL_INTERVAL = 5000;
+
+    const poll = () => {
+      const proc = spawn("cron-agents", ["run-status", "--task-id", taskId], {
+        shell: true,
+        stdio: "pipe",
+        cwd: require("os").homedir(),
+      });
+
+      let output = "";
+      proc.stdout?.on("data", (data: Buffer) => { output += data.toString(); });
+      proc.stderr?.on("data", (data: Buffer) => { output += data.toString(); });
+
+      proc.on("close", () => {
+        const lower = output.toLowerCase();
+        if (lower.includes("completed") || lower.includes("success")) {
+          this.stopRunning(taskId, runBtn);
+          new Notice(`✓ ${taskId} completed`);
+          this.debouncedRefresh();
+        } else if (lower.includes("failed") || lower.includes("error")) {
+          this.stopRunning(taskId, runBtn);
+          new Notice(`✗ ${taskId} failed`);
+          this.debouncedRefresh();
+        }
+        // Otherwise still running — keep polling
+      });
+    };
+
+    // First check after a short delay, then regular interval
+    const timer = setInterval(poll, POLL_INTERVAL);
+    this.pollTimers.set(taskId, timer);
+    setTimeout(poll, 2000);
+  }
+
+  private stopRunning(taskId: string, runBtn: HTMLElement): void {
+    this.runningTasks.delete(taskId);
+    const timer = this.pollTimers.get(taskId);
+    if (timer) {
+      clearInterval(timer);
+      this.pollTimers.delete(taskId);
+    }
+    runBtn.empty();
+    setIcon(runBtn, "play");
+    runBtn.removeClass("pensieve-task-running");
   }
 }
 
