@@ -173,7 +173,9 @@ export class TasksView extends ItemView {
   }
 
   private parseFrontmatter(raw: string): { meta: TaskFrontmatter; instructions: string } | null {
-    const match = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+    // Normalize line endings to \n (files may have \r\n on Windows/OneDrive)
+    const normalized = raw.replace(/\r\n/g, "\n");
+    const match = normalized.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
     if (!match) return null;
 
     const yamlBlock = match[1];
@@ -191,13 +193,17 @@ export class TasksView extends ItemView {
       return def;
     };
 
+    // Handle nested notifications.toast
+    const toastMatch = yamlBlock.match(/^\s+toast:\s*(true|false)/m);
+    const toast = toastMatch ? toastMatch[1] === "true" : false;
+
     const meta: TaskFrontmatter = {
       id: get("id") || "",
       schedule: get("schedule") || "0 0 * * *",
       invocation: (get("invocation") as "cli" | "api") || "cli",
       agent: get("agent") || "copilot",
       enabled: getBool("enabled", true),
-      notifications: { toast: getBool("toast", false) },
+      notifications: { toast },
     };
 
     return { meta, instructions };
