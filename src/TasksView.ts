@@ -1,38 +1,41 @@
 import * as path from "path";
-import { spawn, ChildProcess } from "child_process";
-import { ItemView, Menu, Notice, WorkspaceLeaf, setIcon } from "obsidian";
+import { spawn } from "child_process";
+import { ItemView, Menu, Notice, WorkspaceLeaf, setIcon, TextAreaComponent, DropdownComponent, ToggleComponent, Setting } from "obsidian";
 import { VIEW_TYPE_TASKS, ICON_TASKS, TASKS_DIR, LOGS_DIR } from "./constants";
 import type PensievePlugin from "./main";
 
-const SUPPORTED_EXTENSIONS = new Set([".ps1", ".js", ".sh", ".bat", ".cmd"]);
-const MAX_INLINE_LOGS = 3;
+/** Parsed frontmatter from a cron-agents task .md file */
+interface TaskFrontmatter {
+  id: string;
+  schedule: string;
+  invocation: "cli" | "api";
+  agent: string;
+  enabled: boolean;
+  notifications: { toast: boolean };
+  dependsOn?: string[];
+  variables?: Record<string, string>;
+}
 
-interface TaskInfo {
-  /** Full filename, e.g. "sync-notes.ps1" — used as unique ID */
+interface ParsedTask {
+  /** Filename (e.g. "daily-recap.md") */
   filename: string;
-  /** Display name without extension */
-  displayName: string;
-  /** Absolute path to the script */
-  absolutePath: string;
-  /** Extension including dot */
-  ext: string;
+  /** Vault-relative path */
+  vaultPath: string;
+  /** Parsed frontmatter fields */
+  meta: TaskFrontmatter;
+  /** Markdown body (instructions/prompt) */
+  instructions: string;
+  /** Raw file content */
+  raw: string;
 }
 
-interface LogEntry {
-  /** ISO timestamp */
-  timestamp: string;
-  /** Vault-relative path to the log file */
-  vaultPath: string;
-  /** First line preview */
-  preview: string;
-  /** Whether the run succeeded */
-  success: boolean;
-}
+const DEBOUNCE_MS = 400;
 
 export class TasksView extends ItemView {
   private plugin: PensievePlugin;
   private listEl: HTMLElement | null = null;
-  private runningTasks = new Map<string, ChildProcess>();
+  private refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private expandedTask: string | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: PensievePlugin) {
     super(leaf);
@@ -83,21 +86,26 @@ export class TasksView extends ItemView {
 
     this.listEl = container.createDiv({ cls: "pensieve-tasks-list" });
 
-    // Watch for file changes in .pensieve/tasks/
+    // Watch for changes in .pensieve/tasks/
+    this.registerEvent(
+      this.app.vault.on("modify", (file) => {
+        if (file.path.startsWith(TASKS_DIR)) this.debouncedRefresh();
+      })
+    );
     this.registerEvent(
       this.app.vault.on("create", (file) => {
-        if (file.path.startsWith(TASKS_DIR)) this.renderTasks();
+        if (file.path.startsWith(TASKS_DIR)) this.debouncedRefresh();
       })
     );
     this.registerEvent(
       this.app.vault.on("delete", (file) => {
-        if (file.path.startsWith(TASKS_DIR)) this.renderTasks();
+        if (file.path.startsWith(TASKS_DIR)) this.debouncedRefresh();
       })
     );
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
         if (file.path.startsWith(TASKS_DIR) || oldPath.startsWith(TASKS_DIR)) {
-          this.renderTasks();
+          this.debouncedRefresh();
         }
       })
     );
@@ -106,81 +114,129 @@ export class TasksView extends ItemView {
   }
 
   async onClose(): Promise<void> {
-    // Kill any still-running tasks spawned from this view
-    for (const [, proc] of this.runningTasks) {
-      proc.kill();
+    if (this.refreshTimer) {
+      clearTimeout(this.refreshTimer);
+      this.refreshTimer = null;
     }
-    this.runningTasks.clear();
   }
 
-  // ── Task discovery ──────────────────────────────────────
-
-  private getVaultBasePath(): string {
-    return (this.app.vault.adapter as any).basePath as string;
+  private debouncedRefresh(): void {
+    if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    this.refreshTimer = setTimeout(() => {
+      this.refreshTimer = null;
+      this.renderTasks();
+    }, DEBOUNCE_MS);
   }
 
-  private async discoverTasks(): Promise<TaskInfo[]> {
-    const fs = require("fs") as typeof import("fs");
-    const tasksAbsDir = path.join(this.getVaultBasePath(), TASKS_DIR);
+  // ── Task parsing ──────────────────────────────────────
 
-    if (!fs.existsSync(tasksAbsDir)) {
-      return [];
+  private async discoverTasks(): Promise<ParsedTask[]> {
+    const tasks: ParsedTask[] = [];
+    const folder = this.app.vault.getAbstractFileByPath(TASKS_DIR);
+    if (!folder) return tasks;
+
+    const files = this.app.vault.getFiles().filter(
+      (f) => f.path.startsWith(TASKS_DIR + "/") && f.extension === "md"
+    );
+
+    for (const file of files) {
+      try {
+        const raw = await this.app.vault.read(file);
+        const parsed = this.parseFrontmatter(raw);
+        if (parsed) {
+          tasks.push({
+            filename: file.name,
+            vaultPath: file.path,
+            meta: { ...parsed.meta, id: parsed.meta.id || file.basename },
+            instructions: parsed.instructions,
+            raw,
+          });
+        }
+      } catch {
+        // Skip unparseable files
+      }
     }
 
-    const entries = fs.readdirSync(tasksAbsDir, { withFileTypes: true });
-    const tasks: TaskInfo[] = [];
-
-    for (const entry of entries) {
-      if (!entry.isFile()) continue;
-      const ext = path.extname(entry.name).toLowerCase();
-      if (!SUPPORTED_EXTENSIONS.has(ext)) continue;
-
-      tasks.push({
-        filename: entry.name,
-        displayName: path.basename(entry.name, ext),
-        absolutePath: path.join(tasksAbsDir, entry.name),
-        ext,
-      });
-    }
-
-    tasks.sort((a, b) => a.displayName.localeCompare(b.displayName));
+    tasks.sort((a, b) => a.meta.id.localeCompare(b.meta.id));
     return tasks;
   }
 
-  // ── Log discovery ───────────────────────────────────────
+  private parseFrontmatter(raw: string): { meta: TaskFrontmatter; instructions: string } | null {
+    const match = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+    if (!match) return null;
 
-  private async getRecentLogs(task: TaskInfo): Promise<LogEntry[]> {
-    const fs = require("fs") as typeof import("fs");
-    const logDir = path.join(this.getVaultBasePath(), LOGS_DIR, task.filename);
+    const yamlBlock = match[1];
+    const instructions = match[2].trim();
 
-    if (!fs.existsSync(logDir)) return [];
+    // Simple YAML parsing for the fields we care about
+    const get = (key: string): string | undefined => {
+      const m = yamlBlock.match(new RegExp(`^${key}:\\s*"?([^"\\n]*)"?`, "m"));
+      return m ? m[1].trim() : undefined;
+    };
+    const getBool = (key: string, def: boolean): boolean => {
+      const v = get(key);
+      if (v === "true") return true;
+      if (v === "false") return false;
+      return def;
+    };
 
-    const entries = fs.readdirSync(logDir, { withFileTypes: true })
-      .filter((e: any) => e.isFile() && e.name.endsWith(".log"))
-      .map((e: any) => e.name)
-      .sort()
-      .reverse()
-      .slice(0, MAX_INLINE_LOGS);
+    const meta: TaskFrontmatter = {
+      id: get("id") || "",
+      schedule: get("schedule") || "0 0 * * *",
+      invocation: (get("invocation") as "cli" | "api") || "cli",
+      agent: get("agent") || "copilot",
+      enabled: getBool("enabled", true),
+      notifications: { toast: getBool("toast", false) },
+    };
 
-    const logs: LogEntry[] = [];
-    for (const name of entries) {
-      const absPath = path.join(logDir, name);
-      const content = fs.readFileSync(absPath, "utf-8");
-      const firstLine = content.split("\n").find((l: string) => l.trim()) || "(empty)";
-      const success = !content.includes("[EXIT CODE: ") || content.includes("[EXIT CODE: 0]");
-
-      logs.push({
-        timestamp: name.replace(".log", "").replace(/T/g, " ").replace(/-/g, (m: string, i: number) => i > 9 ? ":" : "-"),
-        vaultPath: `${LOGS_DIR}/${task.filename}/${name}`,
-        preview: firstLine.substring(0, 120),
-        success,
-      });
-    }
-
-    return logs;
+    return { meta, instructions };
   }
 
-  // ── Rendering ───────────────────────────────────────────
+  // ── Log discovery ─────────────────────────────────────
+
+  private getRecentLogs(taskId: string, max = 3): { filename: string; absPath: string; timestamp: string; success: boolean }[] {
+    const fs = require("fs") as typeof import("fs");
+    const logsDir = this.getLogsDir();
+    if (!logsDir || !fs.existsSync(logsDir)) return [];
+
+    try {
+      const entries = fs.readdirSync(logsDir)
+        .filter((name: string) => name.startsWith(taskId + "_") && name.endsWith(".md"))
+        .sort()
+        .reverse()
+        .slice(0, max);
+
+      return entries.map((name: string) => {
+        const absPath = path.join(logsDir, name);
+        let success = true;
+        try {
+          const content = fs.readFileSync(absPath, "utf-8");
+          if (content.includes("status: failure")) success = false;
+        } catch { /* ignore */ }
+
+        // Extract timestamp from filename: taskId_2024-02-17T09-00-00_exec-123.md
+        const tsMatch = name.match(/_(\d{4}-\d{2}-\d{2}T[\d-]+)_/);
+        const timestamp = tsMatch ? tsMatch[1].replace(/-/g, (m: string, i: number) => i > 9 ? ":" : "-") : name;
+
+        return { filename: name, absPath, timestamp, success };
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  private getLogsDir(): string | null {
+    const fs = require("fs") as typeof import("fs");
+    const configPath = path.join(require("os").homedir(), ".cron-agents", "config.json");
+    try {
+      const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+      return config.logsDir || null;
+    } catch {
+      return null;
+    }
+  }
+
+  // ── Rendering ─────────────────────────────────────────
 
   private async renderTasks(): Promise<void> {
     if (!this.listEl) return;
@@ -191,201 +247,173 @@ export class TasksView extends ItemView {
     if (tasks.length === 0) {
       this.listEl.createDiv({
         cls: "pensieve-tasks-empty",
-        text: `No tasks found. Add script files to ${TASKS_DIR}/ to get started.`,
+        text: `No tasks found in ${TASKS_DIR}/`,
       });
       return;
     }
 
     for (const task of tasks) {
-      await this.renderTaskItem(task);
+      this.renderTaskRow(task);
     }
   }
 
-  private async renderTaskItem(task: TaskInfo): Promise<void> {
+  private renderTaskRow(task: ParsedTask): void {
     if (!this.listEl) return;
 
     const row = this.listEl.createDiv({ cls: "pensieve-task-item" });
 
-    // ── Header row ──
+    // ── Summary row ──
     const headerRow = row.createDiv({ cls: "pensieve-task-header" });
 
     const info = headerRow.createDiv({ cls: "pensieve-task-info" });
-    info.createEl("span", { cls: "pensieve-task-name", text: task.displayName });
-    info.createEl("span", { cls: "pensieve-task-ext", text: task.ext });
+
+    const statusDot = info.createSpan({
+      cls: `pensieve-task-status ${task.meta.enabled ? "pensieve-task-enabled" : "pensieve-task-disabled"}`,
+      attr: { "aria-label": task.meta.enabled ? "Enabled" : "Disabled" },
+    });
+
+    info.createEl("span", { cls: "pensieve-task-name", text: task.meta.id });
+    info.createEl("span", { cls: "pensieve-task-schedule", text: task.meta.schedule });
 
     const controls = headerRow.createDiv({ cls: "pensieve-task-controls" });
 
     // Run button
     const runBtn = controls.createEl("button", {
       cls: "pensieve-task-btn clickable-icon",
-      attr: { "aria-label": "Run task" },
+      attr: { "aria-label": "Run task now" },
     });
     setIcon(runBtn, "play");
-    runBtn.addEventListener("click", () => this.runTask(task, runBtn, logsContainer));
-
-    // Toggle logs button
-    const logsBtn = controls.createEl("button", {
-      cls: "pensieve-task-btn clickable-icon",
-      attr: { "aria-label": "Toggle logs" },
+    runBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.runTask(task, runBtn);
     });
-    setIcon(logsBtn, "file-text");
 
-    // ── Logs section (collapsed by default) ──
-    const logsContainer = row.createDiv({ cls: "pensieve-task-logs hidden" });
+    // Open in editor button
+    const editBtn = controls.createEl("button", {
+      cls: "pensieve-task-btn clickable-icon",
+      attr: { "aria-label": "Open task file in editor" },
+    });
+    setIcon(editBtn, "pencil");
+    editBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.app.workspace.openLinkText(task.vaultPath, "", false);
+    });
 
-    logsBtn.addEventListener("click", async () => {
-      const isHidden = logsContainer.hasClass("hidden");
+    // ── Expandable detail panel ──
+    const detail = row.createDiv({ cls: "pensieve-task-detail hidden" });
+
+    headerRow.addEventListener("click", () => {
+      const isHidden = detail.hasClass("hidden");
       if (isHidden) {
-        await this.renderLogs(task, logsContainer);
-        logsContainer.removeClass("hidden");
+        this.renderDetail(task, detail);
+        detail.removeClass("hidden");
+        row.addClass("pensieve-task-expanded");
       } else {
-        logsContainer.addClass("hidden");
+        detail.addClass("hidden");
+        row.removeClass("pensieve-task-expanded");
       }
     });
   }
 
-  private async renderLogs(task: TaskInfo, container: HTMLElement): Promise<void> {
+  private renderDetail(task: ParsedTask, container: HTMLElement): void {
     container.empty();
-    const logs = await this.getRecentLogs(task);
 
+    // ── Metadata ──
+    const meta = container.createDiv({ cls: "pensieve-task-meta" });
+
+    const metaGrid = meta.createDiv({ cls: "pensieve-task-meta-grid" });
+    this.addMetaRow(metaGrid, "Agent", task.meta.agent);
+    this.addMetaRow(metaGrid, "Invocation", task.meta.invocation);
+    this.addMetaRow(metaGrid, "Schedule", task.meta.schedule);
+    this.addMetaRow(metaGrid, "Enabled", task.meta.enabled ? "Yes" : "No");
+    this.addMetaRow(metaGrid, "Notifications", task.meta.notifications.toast ? "Toast" : "None");
+
+    // ── Prompt / Instructions ──
+    const promptSection = container.createDiv({ cls: "pensieve-task-prompt-section" });
+    promptSection.createEl("h6", { text: "Prompt" });
+
+    const promptContent = promptSection.createDiv({ cls: "pensieve-task-prompt" });
+    promptContent.createEl("pre", { text: task.instructions || "(empty)" });
+
+    // ── Recent Logs ──
+    const logsSection = container.createDiv({ cls: "pensieve-task-logs-section" });
+    logsSection.createEl("h6", { text: "Recent Logs" });
+
+    const logs = this.getRecentLogs(task.meta.id);
     if (logs.length === 0) {
-      container.createDiv({
-        cls: "pensieve-task-logs-empty",
-        text: "No logs yet.",
-      });
-      return;
-    }
+      logsSection.createDiv({ cls: "pensieve-task-logs-empty", text: "No logs yet." });
+    } else {
+      for (const log of logs) {
+        const entry = logsSection.createDiv({ cls: "pensieve-log-entry" });
+        const entryHeader = entry.createDiv({
+          cls: `pensieve-log-header ${log.success ? "pensieve-log-success" : "pensieve-log-failure"}`,
+        });
 
-    for (const log of logs) {
-      const entry = container.createDiv({ cls: "pensieve-log-entry" });
-      const statusIcon = log.success ? "check-circle" : "x-circle";
-      const statusCls = log.success ? "pensieve-log-success" : "pensieve-log-failure";
+        const iconEl = entryHeader.createSpan({ cls: "pensieve-log-icon" });
+        setIcon(iconEl, log.success ? "check-circle" : "x-circle");
 
-      const entryHeader = entry.createDiv({ cls: `pensieve-log-header ${statusCls}` });
+        entryHeader.createSpan({ cls: "pensieve-log-time", text: log.timestamp });
 
-      const iconEl = entryHeader.createSpan({ cls: "pensieve-log-icon" });
-      setIcon(iconEl, statusIcon);
-
-      entryHeader.createSpan({ cls: "pensieve-log-time", text: log.timestamp });
-
-      const openBtn = entryHeader.createEl("button", {
-        cls: "pensieve-task-btn clickable-icon",
-        attr: { "aria-label": "Open log" },
-      });
-      setIcon(openBtn, "external-link");
-      openBtn.addEventListener("click", async (e) => {
-        e.stopPropagation();
-        // Open the log file in a new leaf
-        const file = this.app.vault.getAbstractFileByPath(log.vaultPath);
-        if (file) {
-          await this.app.workspace.getLeaf("tab").openFile(file as any);
-        } else {
-          new Notice("Log file not found in vault. It may need to be indexed.");
-        }
-      });
-
-      entry.createDiv({ cls: "pensieve-log-preview", text: log.preview });
+        const openBtn = entryHeader.createEl("button", {
+          cls: "pensieve-task-btn clickable-icon",
+          attr: { "aria-label": "Open log file" },
+        });
+        setIcon(openBtn, "external-link");
+        openBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          // Open the log file externally since it's outside the vault
+          require("electron").shell.openPath(log.absPath);
+        });
+      }
     }
   }
 
-  // ── Task execution ──────────────────────────────────────
+  private addMetaRow(grid: HTMLElement, label: string, value: string): void {
+    const row = grid.createDiv({ cls: "pensieve-meta-row" });
+    row.createSpan({ cls: "pensieve-meta-label", text: label });
+    row.createSpan({ cls: "pensieve-meta-value", text: value });
+  }
 
-  private async runTask(task: TaskInfo, runBtn: HTMLElement, logsContainer: HTMLElement): Promise<void> {
-    if (this.runningTasks.has(task.filename)) {
-      new Notice(`${task.displayName} is already running.`);
-      return;
-    }
+  // ── Task execution via cron-agents CLI ────────────────
 
-    const fs = require("fs") as typeof import("fs");
-    const vaultBase = this.getVaultBasePath();
-
-    // Ensure log directory exists
-    const logDir = path.join(vaultBase, LOGS_DIR, task.filename);
-    fs.mkdirSync(logDir, { recursive: true });
-
-    // Create log file
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const logFilename = `${timestamp}.log`;
-    const logAbsPath = path.join(logDir, logFilename);
-    const logStream = fs.createWriteStream(logAbsPath, { flags: "a" });
-
-    // Determine interpreter
-    const { cmd, args } = this.getInterpreter(task);
-
-    // UI: show running state
+  private runTask(task: ParsedTask, runBtn: HTMLElement): void {
     runBtn.empty();
     setIcon(runBtn, "loader");
     runBtn.addClass("pensieve-task-running");
-    runBtn.setAttribute("disabled", "true");
 
-    const startTime = Date.now();
-    logStream.write(`[TASK: ${task.filename}]\n[STARTED: ${new Date().toISOString()}]\n\n`);
+    new Notice(`Running ${task.meta.id}...`);
 
-    try {
-      const proc = spawn(cmd, args, {
-        cwd: vaultBase,
-        env: { ...process.env },
-        stdio: ["ignore", "pipe", "pipe"],
-        shell: false,
-      });
+    const proc = spawn("npx", ["@sebastienlevert/cron-agents", "run", task.meta.id], {
+      shell: true,
+      stdio: "pipe",
+      cwd: require("os").homedir(),
+    });
 
-      this.runningTasks.set(task.filename, proc);
+    let output = "";
+    proc.stdout?.on("data", (data: Buffer) => { output += data.toString(); });
+    proc.stderr?.on("data", (data: Buffer) => { output += data.toString(); });
 
-      proc.stdout?.on("data", (data: Buffer) => logStream.write(data));
-      proc.stderr?.on("data", (data: Buffer) => logStream.write(data));
-
-      const exitCode = await new Promise<number | null>((resolve) => {
-        proc.on("close", (code) => resolve(code));
-        proc.on("error", (err) => {
-          logStream.write(`\n[ERROR: ${err.message}]\n`);
-          resolve(null);
-        });
-      });
-
-      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      logStream.write(`\n[EXIT CODE: ${exitCode ?? "unknown"}]\n[DURATION: ${elapsed}s]\n`);
-
-      if (exitCode === 0) {
-        new Notice(`✓ ${task.displayName} completed (${elapsed}s)`);
-      } else {
-        new Notice(`✗ ${task.displayName} failed (exit ${exitCode})`);
-      }
-    } catch (err: any) {
-      logStream.write(`\n[SPAWN ERROR: ${err.message}]\n`);
-      new Notice(`✗ ${task.displayName} failed: ${err.message}`);
-    } finally {
-      logStream.end();
-      this.runningTasks.delete(task.filename);
-
-      // UI: restore run button
+    proc.on("close", (code) => {
       runBtn.empty();
       setIcon(runBtn, "play");
       runBtn.removeClass("pensieve-task-running");
-      runBtn.removeAttribute("disabled");
 
-      // Refresh logs if visible
-      if (!logsContainer.hasClass("hidden")) {
-        await this.renderLogs(task, logsContainer);
+      if (code === 0) {
+        new Notice(`✓ ${task.meta.id} completed`);
+      } else {
+        new Notice(`✗ ${task.meta.id} failed (exit ${code})`);
       }
-    }
-  }
 
-  private getInterpreter(task: TaskInfo): { cmd: string; args: string[] } {
-    switch (task.ext) {
-      case ".ps1":
-        return {
-          cmd: "powershell.exe",
-          args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", task.absolutePath],
-        };
-      case ".js":
-        return { cmd: "node", args: [task.absolutePath] };
-      case ".sh":
-        return { cmd: "bash", args: [task.absolutePath] };
-      case ".bat":
-      case ".cmd":
-        return { cmd: "cmd.exe", args: ["/c", task.absolutePath] };
-      default:
-        return { cmd: task.absolutePath, args: [] };
-    }
+      // Refresh to show new log entry
+      this.debouncedRefresh();
+    });
+
+    proc.on("error", (err) => {
+      runBtn.empty();
+      setIcon(runBtn, "play");
+      runBtn.removeClass("pensieve-task-running");
+      new Notice(`✗ Failed to run ${task.meta.id}: ${err.message}`);
+    });
   }
 }
+
