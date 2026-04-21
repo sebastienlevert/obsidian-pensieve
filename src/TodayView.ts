@@ -1,4 +1,4 @@
-import { ItemView, MarkdownRenderer, TFile, WorkspaceLeaf } from "obsidian";
+import { ItemView, MarkdownRenderer, Menu, TFile, WorkspaceLeaf } from "obsidian";
 import { VIEW_TYPE_TODAY, ICON_TODAY } from "./constants";
 import type PensievePlugin from "./main";
 
@@ -32,6 +32,16 @@ export class TodayView extends ItemView {
 
   getIcon(): string {
     return ICON_TODAY;
+  }
+
+  /** Prevent pin, link, and move actions on this tab */
+  onPaneMenu(menu: Menu, source: string): void {
+    // Only add the close action — skip the default pin/link/move items
+    menu.addItem((item) => {
+      item.setTitle("Close").setIcon("x").onClick(() => {
+        this.leaf.detach();
+      });
+    });
   }
 
   async onOpen(): Promise<void> {
