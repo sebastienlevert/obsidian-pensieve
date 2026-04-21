@@ -1,7 +1,8 @@
 import * as path from "path";
+import * as fs from "fs";
 import { spawn } from "child_process";
-import { ItemView, Menu, Notice, WorkspaceLeaf, setIcon, TextAreaComponent, DropdownComponent, ToggleComponent, Setting } from "obsidian";
-import { VIEW_TYPE_TASKS, ICON_TASKS, TASKS_DIR, LOGS_DIR } from "./constants";
+import { ItemView, Menu, Notice, WorkspaceLeaf, setIcon } from "obsidian";
+import { VIEW_TYPE_TASKS, ICON_TASKS, TASKS_DIR } from "./constants";
 import type PensievePlugin from "./main";
 
 /** Parsed frontmatter from a cron-agents task .md file */
@@ -19,8 +20,8 @@ interface TaskFrontmatter {
 interface ParsedTask {
   /** Filename (e.g. "daily-recap.md") */
   filename: string;
-  /** Vault-relative path */
-  vaultPath: string;
+  /** Absolute path on disk */
+  absPath: string;
   /** Parsed frontmatter fields */
   meta: TaskFrontmatter;
   /** Markdown body (instructions/prompt) */
@@ -35,7 +36,13 @@ export class TasksView extends ItemView {
   private plugin: PensievePlugin;
   private listEl: HTMLElement | null = null;
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
-  private expandedTask: string | null = null;
+  private fsWatcher: fs.FSWatcher | null = null;
+
+  /** Absolute path to .pensieve/tasks inside the vault */
+  private get tasksAbsDir(): string {
+    const vaultBase = (this.app.vault.adapter as any).basePath as string;
+    return path.join(vaultBase, TASKS_DIR);
+  }
 
   constructor(leaf: WorkspaceLeaf, plugin: PensievePlugin) {
     super(leaf);
@@ -86,37 +93,36 @@ export class TasksView extends ItemView {
 
     this.listEl = container.createDiv({ cls: "pensieve-tasks-list" });
 
-    // Watch for changes in .pensieve/tasks/
-    this.registerEvent(
-      this.app.vault.on("modify", (file) => {
-        if (file.path.startsWith(TASKS_DIR)) this.debouncedRefresh();
-      })
-    );
-    this.registerEvent(
-      this.app.vault.on("create", (file) => {
-        if (file.path.startsWith(TASKS_DIR)) this.debouncedRefresh();
-      })
-    );
-    this.registerEvent(
-      this.app.vault.on("delete", (file) => {
-        if (file.path.startsWith(TASKS_DIR)) this.debouncedRefresh();
-      })
-    );
-    this.registerEvent(
-      this.app.vault.on("rename", (file, oldPath) => {
-        if (file.path.startsWith(TASKS_DIR) || oldPath.startsWith(TASKS_DIR)) {
-          this.debouncedRefresh();
-        }
-      })
-    );
+    // Watch for changes using native fs.watch (Obsidian vault API ignores dotfolders)
+    this.startFsWatcher();
 
-    await this.renderTasks();
+    this.renderTasks();
   }
 
   async onClose(): Promise<void> {
     if (this.refreshTimer) {
       clearTimeout(this.refreshTimer);
       this.refreshTimer = null;
+    }
+    this.stopFsWatcher();
+  }
+
+  private startFsWatcher(): void {
+    const dir = this.tasksAbsDir;
+    if (!fs.existsSync(dir)) return;
+    try {
+      this.fsWatcher = fs.watch(dir, { persistent: false }, () => {
+        this.debouncedRefresh();
+      });
+    } catch {
+      // Fail silently — manual refresh still works
+    }
+  }
+
+  private stopFsWatcher(): void {
+    if (this.fsWatcher) {
+      this.fsWatcher.close();
+      this.fsWatcher = null;
     }
   }
 
@@ -128,26 +134,31 @@ export class TasksView extends ItemView {
     }, DEBOUNCE_MS);
   }
 
-  // ── Task parsing ──────────────────────────────────────
+  // ── Task parsing (direct filesystem) ──────────────────
 
-  private async discoverTasks(): Promise<ParsedTask[]> {
+  private discoverTasks(): ParsedTask[] {
     const tasks: ParsedTask[] = [];
-    const folder = this.app.vault.getAbstractFileByPath(TASKS_DIR);
-    if (!folder) return tasks;
+    const dir = this.tasksAbsDir;
+    if (!fs.existsSync(dir)) return tasks;
 
-    const files = this.app.vault.getFiles().filter(
-      (f) => f.path.startsWith(TASKS_DIR + "/") && f.extension === "md"
-    );
+    let entries: string[];
+    try {
+      entries = fs.readdirSync(dir).filter((n) => n.endsWith(".md"));
+    } catch {
+      return tasks;
+    }
 
-    for (const file of files) {
+    for (const filename of entries) {
       try {
-        const raw = await this.app.vault.read(file);
+        const absPath = path.join(dir, filename);
+        const raw = fs.readFileSync(absPath, "utf-8");
         const parsed = this.parseFrontmatter(raw);
         if (parsed) {
+          const basename = filename.replace(/\.md$/, "");
           tasks.push({
-            filename: file.name,
-            vaultPath: file.path,
-            meta: { ...parsed.meta, id: parsed.meta.id || file.basename },
+            filename,
+            absPath,
+            meta: { ...parsed.meta, id: parsed.meta.id || basename },
             instructions: parsed.instructions,
             raw,
           });
@@ -238,11 +249,11 @@ export class TasksView extends ItemView {
 
   // ── Rendering ─────────────────────────────────────────
 
-  private async renderTasks(): Promise<void> {
+  private renderTasks(): void {
     if (!this.listEl) return;
     this.listEl.empty();
 
-    const tasks = await this.discoverTasks();
+    const tasks = this.discoverTasks();
 
     if (tasks.length === 0) {
       this.listEl.createDiv({
@@ -296,7 +307,8 @@ export class TasksView extends ItemView {
     setIcon(editBtn, "pencil");
     editBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      this.app.workspace.openLinkText(task.vaultPath, "", false);
+      // Dotfolder files can't be opened via vault API — open externally
+      require("electron").shell.openPath(task.absPath);
     });
 
     // ── Expandable detail panel ──
