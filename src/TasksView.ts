@@ -37,6 +37,10 @@ export class TasksView extends ItemView {
   private listEl: HTMLElement | null = null;
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
   private fsWatcher: fs.FSWatcher | null = null;
+  private statusPollTimer: ReturnType<typeof setInterval> | null = null;
+
+  /** Map task ID → run button element for non-destructive status updates */
+  private runBtnMap = new Map<string, HTMLElement>();
 
   /** Absolute path to .pensieve/tasks inside the vault */
   private get tasksAbsDir(): string {
@@ -97,12 +101,20 @@ export class TasksView extends ItemView {
     this.startFsWatcher();
 
     this.renderTasks();
+
+    // Poll for externally-running tasks every 10s
+    this.checkRunningStatuses();
+    this.statusPollTimer = setInterval(() => this.checkRunningStatuses(), 10000);
   }
 
   async onClose(): Promise<void> {
     if (this.refreshTimer) {
       clearTimeout(this.refreshTimer);
       this.refreshTimer = null;
+    }
+    if (this.statusPollTimer) {
+      clearInterval(this.statusPollTimer);
+      this.statusPollTimer = null;
     }
     // Clean up all poll timers
     for (const timer of this.pollTimers.values()) {
@@ -263,6 +275,7 @@ export class TasksView extends ItemView {
   private renderTasks(): void {
     if (!this.listEl) return;
     this.listEl.empty();
+    this.runBtnMap.clear();
 
     const tasks = this.discoverTasks();
 
@@ -318,6 +331,9 @@ export class TasksView extends ItemView {
       e.stopPropagation();
       this.runTask(task, runBtn);
     });
+
+    // Register for status polling
+    this.runBtnMap.set(task.meta.id, runBtn);
 
     // ── Expandable detail panel ──
     const detail = row.createDiv({ cls: "pensieve-task-detail hidden" });
@@ -440,6 +456,48 @@ export class TasksView extends ItemView {
         });
       }
     }
+  }
+
+  // ── External run detection ────────────────────────────
+
+  /** Check all tasks for externally-triggered active runs */
+  private checkRunningStatuses(): void {
+    for (const [taskId, btn] of this.runBtnMap) {
+      // Skip tasks we already know are running (manually triggered)
+      if (this.runningTasks.has(taskId)) continue;
+
+      this.checkTaskStatus(taskId, btn);
+    }
+  }
+
+  private checkTaskStatus(taskId: string, btn: HTMLElement): void {
+    const proc = spawn("cron-agents", ["run-status", "--task-id", taskId], {
+      shell: true,
+      stdio: "pipe",
+      cwd: require("os").homedir(),
+    });
+
+    let output = "";
+    proc.stdout?.on("data", (d: Buffer) => { output += d.toString(); });
+    proc.stderr?.on("data", (d: Buffer) => { output += d.toString(); });
+
+    proc.on("close", () => {
+      const lower = output.toLowerCase();
+      const isRunning = lower.includes("running") || lower.includes("queued");
+      const wasMarked = btn.hasClass("pensieve-task-running");
+
+      if (isRunning && !wasMarked) {
+        // External run detected — show spinner
+        this.runningTasks.add(taskId);
+        btn.empty();
+        setIcon(btn, "loader");
+        btn.addClass("pensieve-task-running");
+        btn.setAttribute("disabled", "true");
+
+        // Poll until it finishes
+        this.pollRunStatus(taskId, btn);
+      }
+    });
   }
 
   // ── Task execution via cron-agents CLI ────────────────
