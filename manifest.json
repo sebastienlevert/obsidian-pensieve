@@ -1,7 +1,7 @@
 {
   "id": "pensieve",
   "name": "Pensieve",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "minAppVersion": "1.5.0",
   "description": "AI-enhanced note management for Obsidian — optimized for better AI consumption of your vault.",
   "author": "Sébastien Levert",
