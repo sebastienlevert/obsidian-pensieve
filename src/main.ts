@@ -3,6 +3,7 @@ import { TodayView } from "./TodayView";
 import { TasksView } from "./TasksView";
 import { PensieveSettingTab } from "./PensieveSettingTab";
 import { shareFile } from "./sharing";
+import { convertToWord } from "./wordExport";
 import {
   VIEW_TYPE_TODAY, ICON_TODAY, TODAY_ICON_SVG,
   VIEW_TYPE_TASKS, ICON_TASKS, TASKS_ICON_SVG,
@@ -103,10 +104,33 @@ export default class PensievePlugin extends Plugin {
       },
     });
 
+    // Command: Convert current file to Word
+    this.addCommand({
+      id: "convert-to-word",
+      name: "Convert to Word (.docx)",
+      callback: () => {
+        const file = this.app.workspace.getActiveFile();
+        if (!file || file.extension !== "md") {
+          new Notice("No markdown file to convert.");
+          return;
+        }
+        this.convertVaultFileToWord(file);
+      },
+    });
+
     // Right-click context menu on files in the file explorer
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu: Menu, file) => {
         if (!(file instanceof TFile)) return;
+        this.addTodayPinMenuItems(menu, file);
+        if (file.extension === "md") {
+          menu.addItem((item: MenuItem) => {
+            item
+              .setTitle("Convert to Word")
+              .setIcon("file-text")
+              .onClick(() => this.convertVaultFileToWord(file));
+          });
+        }
         menu.addItem((item: MenuItem) => {
           item
             .setTitle("Share via OneDrive")
@@ -121,6 +145,15 @@ export default class PensievePlugin extends Plugin {
       this.app.workspace.on("editor-menu", (menu: Menu) => {
         const file = this.app.workspace.getActiveFile();
         if (!file) return;
+        this.addTodayPinMenuItems(menu, file);
+        if (file.extension === "md") {
+          menu.addItem((item: MenuItem) => {
+            item
+              .setTitle("Convert to Word")
+              .setIcon("file-text")
+              .onClick(() => this.convertVaultFileToWord(file));
+          });
+        }
         menu.addItem((item: MenuItem) => {
           item
             .setTitle("Share via OneDrive")
@@ -207,6 +240,49 @@ export default class PensievePlugin extends Plugin {
 
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
+  }
+
+  /** Add "Pin as Today note" or "Unpin Today note" context menu items */
+  private addTodayPinMenuItems(menu: Menu, file: TFile): void {
+    const isPinned = this.settings.todayNotePath === file.path;
+
+    if (isPinned) {
+      menu.addItem((item: MenuItem) => {
+        item
+          .setTitle("Unpin Today note")
+          .setIcon(ICON_TODAY)
+          .onClick(async () => {
+            this.settings.todayNotePath = "";
+            await this.saveSettings();
+            this.refreshTodayViews();
+            new Notice("Today note unpinned.");
+          });
+      });
+    } else {
+      menu.addItem((item: MenuItem) => {
+        item
+          .setTitle("Pin as Today note")
+          .setIcon(ICON_TODAY)
+          .onClick(async () => {
+            this.settings.todayNotePath = file.path;
+            await this.saveSettings();
+            this.refreshTodayViews();
+            await this.activateTodayView();
+            new Notice(`Pinned "${file.basename}" as Today note.`);
+          });
+      });
+    }
+  }
+
+  /** Convert a vault markdown file to Word using markmyword CLI */
+  private convertVaultFileToWord(file: TFile): void {
+    const adapter = this.app.vault.adapter as any;
+    if (!adapter.basePath) {
+      new Notice("Cannot determine vault path.");
+      return;
+    }
+    const absolutePath = require("path").join(adapter.basePath, file.path);
+    convertToWord(absolutePath);
   }
 
   /** Resolve a vault file to its absolute path and invoke the OneDrive share dialog */

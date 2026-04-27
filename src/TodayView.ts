@@ -21,12 +21,6 @@ export class TodayView extends ItemView {
   }
 
   getDisplayText(): string {
-    if (this.plugin.settings.todayNotePath) {
-      const file = this.app.vault.getAbstractFileByPath(this.plugin.settings.todayNotePath);
-      if (file instanceof TFile) {
-        return `Today — ${file.basename}`;
-      }
-    }
     return "Today";
   }
 
